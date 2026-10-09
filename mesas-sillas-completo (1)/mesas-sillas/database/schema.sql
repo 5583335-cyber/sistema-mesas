@@ -1,16 +1,21 @@
 -- Schema completo para Neon PostgreSQL. Ejecutar completo en el SQL Editor.
 BEGIN;
 
-DROP TABLE IF EXISTS movimientos, devoluciones_detalle, devoluciones, prestamos_detalle, prestamos,
+DROP TABLE IF EXISTS pagos, movimientos, devoluciones_detalle, devoluciones, prestamos_detalle, prestamos,
   reservas_detalle, reservas, inventario, usuarios CASCADE;
-DROP TYPE IF EXISTS rol_usuario, tipo_recurso, estado_recurso, estado_reserva, estado_prestamo, tipo_movimiento CASCADE;
+DROP TYPE IF EXISTS rol_usuario, tipo_recurso, estado_recurso, estado_reserva, estado_prestamo, tipo_movimiento,
+  estado_pago, metodo_pago, estado_transaccion CASCADE;
 
 CREATE TYPE rol_usuario    AS ENUM ('ADMIN','USER');
 CREATE TYPE tipo_recurso   AS ENUM ('MESA','SILLA');
 CREATE TYPE estado_recurso AS ENUM ('DISPONIBLE','AGOTADO','INACTIVO');
 CREATE TYPE estado_reserva AS ENUM ('PENDIENTE','CONFIRMADA','CANCELADA','FINALIZADA');
 CREATE TYPE estado_prestamo AS ENUM ('PENDIENTE','ACTIVO','PARCIALMENTE_DEVUELTO','DEVUELTO','VENCIDO');
-CREATE TYPE tipo_movimiento AS ENUM ('RESERVA','CANCELACION','PRESTAMO','DEVOLUCION','DEVOLUCION_PARCIAL','MODIFICACION');
+CREATE TYPE tipo_movimiento AS ENUM ('RESERVA','CANCELACION','PRESTAMO','DEVOLUCION','DEVOLUCION_PARCIAL','MODIFICACION','PAGO','REEMBOLSO');
+-- pago de una reserva (simulado)
+CREATE TYPE estado_pago AS ENUM ('PENDIENTE','PAGADO','REEMBOLSADO','NO_REQUERIDO');
+CREATE TYPE metodo_pago AS ENUM ('TARJETA','EFECTIVO');
+CREATE TYPE estado_transaccion AS ENUM ('APROBADO','RECHAZADO','REEMBOLSADO');
 
 CREATE TABLE usuarios (
   id            INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -30,6 +35,7 @@ CREATE TABLE inventario (
   cantidad_disponible INTEGER NOT NULL DEFAULT 0 CHECK (cantidad_disponible >= 0),
   cantidad_reservada  INTEGER NOT NULL DEFAULT 0 CHECK (cantidad_reservada >= 0),
   cantidad_prestada   INTEGER NOT NULL DEFAULT 0 CHECK (cantidad_prestada >= 0),
+  precio_unitario     NUMERIC(10,2) NOT NULL DEFAULT 0 CHECK (precio_unitario >= 0),  -- USD por unidad y reserva
   estado              estado_recurso NOT NULL DEFAULT 'DISPONIBLE',
   updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT inventario_balance CHECK (cantidad_total = cantidad_disponible + cantidad_reservada + cantidad_prestada)
@@ -43,6 +49,8 @@ CREATE TABLE reservas (
   hora_fin      TIME NOT NULL,
   estado        estado_reserva NOT NULL DEFAULT 'PENDIENTE',
   observaciones TEXT,
+  monto_total   NUMERIC(10,2) NOT NULL DEFAULT 0 CHECK (monto_total >= 0),   -- se fija al crear la reserva
+  estado_pago   estado_pago NOT NULL DEFAULT 'PENDIENTE',
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT reservas_horas CHECK (hora_fin > hora_inicio)
@@ -58,6 +66,7 @@ CREATE TABLE reservas_detalle (
   reserva_id    INTEGER NOT NULL REFERENCES reservas(id) ON DELETE CASCADE,
   inventario_id INTEGER NOT NULL REFERENCES inventario(id),
   cantidad      INTEGER NOT NULL CHECK (cantidad > 0),
+  precio_unitario NUMERIC(10,2) NOT NULL DEFAULT 0 CHECK (precio_unitario >= 0),  -- precio vigente al reservar
   UNIQUE (reserva_id, inventario_id)
 );
 
@@ -106,6 +115,26 @@ CREATE TABLE devoluciones_detalle (
   UNIQUE (devolucion_id, inventario_id)
 );
 
+CREATE TABLE pagos (
+  id               INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  reserva_id       INTEGER NOT NULL REFERENCES reservas(id),
+  usuario_id       INTEGER NOT NULL REFERENCES usuarios(id),   -- dueño de la reserva
+  registrado_por   INTEGER NOT NULL REFERENCES usuarios(id),   -- quien ejecutó el pago
+  monto            NUMERIC(10,2) NOT NULL CHECK (monto > 0),
+  metodo           metodo_pago NOT NULL,
+  estado           estado_transaccion NOT NULL,
+  referencia       VARCHAR(30) NOT NULL UNIQUE,
+  tarjeta_marca    VARCHAR(20),
+  tarjeta_ultimos4 CHAR(4),                                    -- nunca se guarda el número completo ni el CVV
+  motivo_rechazo   VARCHAR(120),
+  reembolsado_at   TIMESTAMPTZ,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- una reserva solo puede tener un pago aprobado vigente (los rechazos no cuentan)
+CREATE UNIQUE INDEX uq_pago_aprobado ON pagos (reserva_id) WHERE estado = 'APROBADO';
+CREATE INDEX idx_pagos_usuario ON pagos (usuario_id);
+CREATE INDEX idx_pagos_reserva ON pagos (reserva_id);
+
 CREATE TABLE movimientos (
   id              INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   usuario_id      INTEGER REFERENCES usuarios(id),
@@ -137,9 +166,9 @@ INSERT INTO usuarios (nombre,email,password_hash,rol) VALUES
  ('Usuario Dos','user2@demo.com','$2b$10$bkJEQAoDkbZTUYsKlBt5WOJgdRbijDyVZ1jblrAs8XNKTExMI180O','USER');
 
 -- Mesas: 100 = 82 disp + 5 reserv + 13 prest | Sillas: 200 = 115 disp + 20 reserv + 65 prest
-INSERT INTO inventario (tipo,nombre,cantidad_total,cantidad_disponible,cantidad_reservada,cantidad_prestada) VALUES
- ('MESA','Mesas',100,82,5,13),
- ('SILLA','Sillas',200,115,20,65);
+INSERT INTO inventario (tipo,nombre,cantidad_total,cantidad_disponible,cantidad_reservada,cantidad_prestada,precio_unitario) VALUES
+ ('MESA','Mesas',100,82,5,13,5.00),
+ ('SILLA','Sillas',200,115,20,65,1.00);
 
 INSERT INTO reservas (usuario_id,fecha,hora_inicio,hora_fin,estado,observaciones) VALUES
  (2,CURRENT_DATE+3,'08:00','12:00','CONFIRMADA','Evento familiar'),
@@ -147,6 +176,17 @@ INSERT INTO reservas (usuario_id,fecha,hora_inicio,hora_fin,estado,observaciones
  (2,CURRENT_DATE+1,'09:00','11:00','CANCELADA','Cancelada por el usuario');
 INSERT INTO reservas_detalle (reserva_id,inventario_id,cantidad) VALUES
  (1,1,5),(1,2,20),(2,1,3),(2,2,10),(3,1,2),(3,2,8);
+
+-- precios y montos de las reservas de prueba
+UPDATE reservas_detalle d SET precio_unitario = i.precio_unitario FROM inventario i WHERE i.id = d.inventario_id;
+UPDATE reservas r SET monto_total = (SELECT COALESCE(SUM(cantidad*precio_unitario),0) FROM reservas_detalle WHERE reserva_id = r.id);
+UPDATE reservas SET estado_pago='PAGADO'        WHERE id=1;  -- confirmada y pagada
+UPDATE reservas SET estado_pago='PENDIENTE'     WHERE id=2;  -- pendiente de pago
+UPDATE reservas SET estado_pago='NO_REQUERIDO'  WHERE id=3;  -- cancelada sin pago
+
+INSERT INTO pagos (reserva_id,usuario_id,registrado_por,monto,metodo,estado,referencia,tarjeta_marca,tarjeta_ultimos4,motivo_rechazo) VALUES
+ (1,2,2,45.00,'TARJETA','APROBADO','PAY-DEMO0001','VISA','4242',NULL),
+ (2,3,3,25.00,'TARJETA','RECHAZADO','PAY-DEMO0002','VISA','9995','Fondos insuficientes');
 
 INSERT INTO prestamos (usuario_id,registrado_por,fecha_prestamo,fecha_prevista_devolucion,estado,observaciones) VALUES
  (2,1,now()-interval '1 day', now()+interval '5 days','ACTIVO','Préstamo activo'),
@@ -168,5 +208,8 @@ INSERT INTO movimientos (usuario_id,tipo,inventario_id,cantidad,estado_anterior,
  (1,'PRESTAMO',2,40,NULL,'ACTIVO',NULL,1,NULL,'Préstamo registrado: 40 sillas'),
  (1,'DEVOLUCION_PARCIAL',1,2,'ACTIVO','PARCIALMENTE_DEVUELTO',NULL,2,1,'Devolución parcial: 2 mesas'),
  (1,'DEVOLUCION_PARCIAL',2,10,'ACTIVO','PARCIALMENTE_DEVUELTO',NULL,2,1,'Devolución parcial: 10 sillas');
+
+INSERT INTO movimientos (usuario_id,tipo,cantidad,estado_anterior,estado_posterior,reserva_id,descripcion) VALUES
+ (2,'PAGO',0,'PENDIENTE','PAGADO',1,'Pago de $45.00 de la reserva #1 (TARJETA ••••4242) ref PAY-DEMO0001');
 
 COMMIT;

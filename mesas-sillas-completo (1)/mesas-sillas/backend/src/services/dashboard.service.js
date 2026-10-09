@@ -12,7 +12,10 @@ exports.obtener = async (user) => {
     reservas_pendientes: await one(`SELECT COUNT(*)::int n FROM reservas WHERE estado='PENDIENTE'${f}`),
     prestamos_activos: await one(`SELECT COUNT(*)::int n FROM prestamos WHERE estado IN ('ACTIVO','PARCIALMENTE_DEVUELTO')${f}`),
     prestamos_vencidos: await one(`SELECT COUNT(*)::int n FROM prestamos WHERE estado='VENCIDO'${f}`),
-    devoluciones_pendientes: await one(`SELECT COUNT(*)::int n FROM prestamos WHERE estado IN ('ACTIVO','PARCIALMENTE_DEVUELTO','VENCIDO')${f}`)
+    devoluciones_pendientes: await one(`SELECT COUNT(*)::int n FROM prestamos WHERE estado IN ('ACTIVO','PARCIALMENTE_DEVUELTO','VENCIDO')${f}`),
+    pagos_pendientes: await one(`SELECT COUNT(*)::int n FROM reservas WHERE estado_pago='PENDIENTE' AND estado<>'CANCELADA'${f}`),
+    monto_por_cobrar: await one(`SELECT COALESCE(SUM(monto_total),0)::float n FROM reservas WHERE estado_pago='PENDIENTE' AND estado<>'CANCELADA'${f}`),
+    monto_cobrado: await one(`SELECT COALESCE(SUM(monto),0)::float n FROM pagos WHERE estado='APROBADO'${f}`)
   };
   const rowsQ = async (sql) => (await query(sql, p)).rows;
   const graficas = {

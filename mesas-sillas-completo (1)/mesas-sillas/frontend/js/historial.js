@@ -1,4 +1,4 @@
-const TIPOS = ['RESERVA', 'CANCELACION', 'PRESTAMO', 'DEVOLUCION', 'DEVOLUCION_PARCIAL', 'MODIFICACION'];
+const TIPOS = ['RESERVA', 'CANCELACION', 'PRESTAMO', 'DEVOLUCION', 'DEVOLUCION_PARCIAL', 'MODIFICACION', 'PAGO', 'REEMBOLSO'];
 async function cargar() {
   const tipo = document.getElementById('t').value, q = document.getElementById('q').value;
   const rows = await api(`/historial?${new URLSearchParams({ ...(tipo && { tipo }), ...(q && { q }) })}`);

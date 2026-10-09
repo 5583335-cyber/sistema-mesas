@@ -14,6 +14,7 @@ app.get('/health', (req, res) => res.json({ ok: true }));
 app.use('/api/auth', require('./routes/auth.routes'));
 app.use('/api/inventario', require('./routes/inventario.routes'));
 app.use('/api/reservas', require('./routes/reservas.routes'));
+app.use('/api/pagos', require('./routes/pagos.routes'));
 const otros = require('./routes/otros.routes');
 app.use('/api/prestamos', otros.prestamos);
 app.use('/api/devoluciones', otros.devoluciones);

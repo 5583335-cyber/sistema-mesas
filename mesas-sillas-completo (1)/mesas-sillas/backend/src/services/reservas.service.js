@@ -2,6 +2,7 @@ const { withTransaction, query } = require('../config/db');
 const AppError = require('../utils/AppError');
 const inv = require('./inventario.service');
 const mov = require('./movimientos.service');
+const pagos = require('./pagos.service');
 
 function validarPayload(b) {
   const { fecha, hora_inicio, hora_fin } = b;
@@ -15,11 +16,11 @@ function validarPayload(b) {
 }
 
 async function items(c, { mesas, sillas }) {
-  const { rows } = await c.query(`SELECT id,tipo FROM inventario WHERE tipo IN ('MESA','SILLA')`);
-  const byTipo = Object.fromEntries(rows.map(r => [r.tipo, r.id]));
+  const { rows } = await c.query(`SELECT id,tipo,precio_unitario FROM inventario WHERE tipo IN ('MESA','SILLA')`);
+  const byTipo = Object.fromEntries(rows.map(r => [r.tipo, r]));
   const out = [];
-  if (mesas > 0) out.push({ inventario_id: byTipo.MESA, cantidad: mesas });
-  if (sillas > 0) out.push({ inventario_id: byTipo.SILLA, cantidad: sillas });
+  if (mesas > 0) out.push({ inventario_id: byTipo.MESA.id, cantidad: mesas, precio_unitario: byTipo.MESA.precio_unitario });
+  if (sillas > 0) out.push({ inventario_id: byTipo.SILLA.id, cantidad: sillas, precio_unitario: byTipo.SILLA.precio_unitario });
   return out;
 }
 
@@ -44,12 +45,18 @@ exports.crear = (user, body) => withTransaction(async (c) => {
   }
   // USER crea PENDIENTE; ADMIN puede crear directamente CONFIRMADA
   const estado = user.rol === 'ADMIN' && body.confirmar ? 'CONFIRMADA' : 'PENDIENTE';
+  // El monto se fija ahora con los precios vigentes (en centavos para evitar errores de decimales)
+  const its = await items(c, q);
+  const centavos = its.reduce((s, it) => s + Math.round(Number(it.precio_unitario) * 100) * it.cantidad, 0);
   const { rows } = await c.query(
-    `INSERT INTO reservas (usuario_id,fecha,hora_inicio,hora_fin,estado,observaciones) VALUES ($1,$2,$3,$4,'PENDIENTE',$5) RETURNING *`,
-    [usuarioId, body.fecha, body.hora_inicio, body.hora_fin, body.observaciones || null]);
+    `INSERT INTO reservas (usuario_id,fecha,hora_inicio,hora_fin,estado,observaciones,monto_total,estado_pago)
+     VALUES ($1,$2,$3,$4,'PENDIENTE',$5,$6,$7) RETURNING *`,
+    [usuarioId, body.fecha, body.hora_inicio, body.hora_fin, body.observaciones || null,
+     (centavos / 100).toFixed(2), centavos > 0 ? 'PENDIENTE' : 'NO_REQUERIDO']);
   const reserva = rows[0];
-  for (const it of await items(c, q))
-    await c.query('INSERT INTO reservas_detalle (reserva_id,inventario_id,cantidad) VALUES ($1,$2,$3)', [reserva.id, it.inventario_id, it.cantidad]);
+  for (const it of its)
+    await c.query('INSERT INTO reservas_detalle (reserva_id,inventario_id,cantidad,precio_unitario) VALUES ($1,$2,$3,$4)',
+      [reserva.id, it.inventario_id, it.cantidad, it.precio_unitario]);
   if (estado === 'CONFIRMADA') {
     await reservarStock(c, reserva.id, user.id, 'PENDIENTE');
     await c.query(`UPDATE reservas SET estado='CONFIRMADA', updated_at=now() WHERE id=$1`, [reserva.id]);
@@ -81,7 +88,12 @@ exports.cancelar = (user, id) => withTransaction(async (c) => {
   for (const d of det)
     await mov.registrar(c, { usuario_id: user.id, tipo: 'CANCELACION', inventario_id: d.inventario_id, cantidad: d.cantidad,
       estado_anterior: rv.estado, estado_posterior: 'CANCELADA', reserva_id: id, descripcion: `Reserva #${id} cancelada` });
-  const r = await c.query(`UPDATE reservas SET estado='CANCELADA', updated_at=now() WHERE id=$1 RETURNING *`, [id]);
+  // Si estaba pagada se reembolsa (misma transacción); si no, ya no hay nada que cobrar
+  await pagos.reembolsar(c, rv, user.id);
+  const r = await c.query(
+    `UPDATE reservas SET estado='CANCELADA', updated_at=now(),
+       estado_pago = CASE WHEN estado_pago='PENDIENTE' THEN 'NO_REQUERIDO'::estado_pago ELSE estado_pago END
+     WHERE id=$1 RETURNING *`, [id]);
   return r.rows[0];
 });
 

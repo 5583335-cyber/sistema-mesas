@@ -37,6 +37,9 @@ async function cargar() {
       `<h2 class="section-title">Operaciones ${d.alcance === 'personal' ? '(tus datos)' : ''}</h2>
        <div class="grid c4">${stat('Reservas pendientes', o.reservas_pendientes, 'calendar', 'warn')}${stat('Préstamos activos', o.prestamos_activos, 'out')}
        ${stat('Préstamos vencidos', o.prestamos_vencidos, 'clock', 'err')}${stat('Devoluciones pendientes', o.devoluciones_pendientes, 'back')}</div>
+       <h2 class="section-title">Pagos ${d.alcance === 'personal' ? '(tus datos)' : ''}</h2>
+       <div class="grid c4">${stat('Reservas sin pagar', o.pagos_pendientes, 'card', 'warn')}${stat(d.alcance === 'personal' ? 'Por pagar' : 'Por cobrar', fmtMoney(o.monto_por_cobrar), 'card', 'err')}
+       ${stat(d.alcance === 'personal' ? 'Total pagado' : 'Total cobrado', fmtMoney(o.monto_cobrado), 'card', 'ok')}</div>
        <h2 class="section-title">Análisis</h2>
        <div class="grid c2">${d.inventario.map((i, k) => `<div class="card"><h3>Distribución de ${esc(i.nombre.toLowerCase())}</h3><div class="chart-box sm"><canvas id="dona${k}"></canvas></div></div>`).join('')}</div>
        <div class="grid c2" style="margin-top:16px">

@@ -4,7 +4,7 @@ Node.js + Express + PostgreSQL (Neon) + frontend HTML/CSS/JS. Una sola app: Expr
 
 ## Estructura
 ```
-database/schema.sql
+database/ (schema.sql, migracion_pagos.sql, seed_demo.sql)
 backend/ (package.json, .env.example, src/{config,controllers,middleware,routes,services,utils,app.js})
 frontend/ (html, css/, js/)
 ```
@@ -16,6 +16,11 @@ frontend/ (html, css/, js/)
 ## 2. Ejecutar schema.sql
 En Neon: **SQL Editor** → pega todo `database/schema.sql` → **Run**.
 (El script borra y recrea las tablas; incluye datos de prueba.)
+
+## 2a. ¿Ya tenías la base creada? (migración de pagos)
+`schema.sql` **borra y recrea todo**. Si ya tienes datos que quieres conservar, ejecuta en su lugar
+`database/migracion_pagos.sql` (una sola vez): agrega precios, estado de pago y la tabla `pagos` sin tocar tus datos.
+Las reservas existentes reciben su monto según el precio vigente; las canceladas/finalizadas quedan sin deuda.
 
 ## 2b. (Opcional) Datos para las gráficas
 Ejecuta `database/seed_demo.sql` en Neon para tener historial de 7 días.
@@ -78,6 +83,10 @@ curl $URL/api/dashboard  -H "Authorization: Bearer TOKEN"
 curl -X POST $URL/api/reservas -H "Authorization: Bearer TOKEN" -H "Content-Type: application/json" \
   -d '{"usuario_id":2,"fecha":"2030-01-10","hora_inicio":"08:00","hora_fin":"12:00","mesas":2,"sillas":30,"confirmar":true}'
 
+# pagar una reserva con tarjeta de prueba (el dueño o un ADMIN)
+curl -X POST $URL/api/reservas/2/pagar -H "Authorization: Bearer TOKEN" -H "Content-Type: application/json" \
+  -d '{"metodo":"TARJETA","tarjeta":{"numero":"4242424242424242","titular":"Ana Perez","vencimiento":"12/30","cvv":"123"}}'
+
 # préstamo desde reserva
 curl -X POST $URL/api/prestamos -H "Authorization: Bearer TOKEN" -H "Content-Type: application/json" \
   -d '{"reserva_id":4,"fecha_prevista_devolucion":"2030-01-12T12:00:00Z"}'
@@ -95,7 +104,10 @@ curl -X POST $URL/api/devoluciones -H "Authorization: Bearer TOKEN" -H "Content-
 | POST/PUT | /api/inventario(/:id) | ADMIN |
 | GET/POST | /api/reservas | todos (USER ve solo las suyas) |
 | POST | /api/reservas/:id/confirmar | ADMIN |
-| POST/DELETE | /api/reservas/:id/cancelar, /api/reservas/:id | dueño o ADMIN |
+| POST/DELETE | /api/reservas/:id/cancelar, /api/reservas/:id | dueño o ADMIN (reembolsa si estaba pagada) |
+| POST | /api/reservas/:id/pagar | dueño o ADMIN (`EFECTIVO` solo ADMIN) |
+| GET | /api/pagos | todos (USER solo los suyos) |
+| GET | /api/pagos/tarjetas-prueba | todos |
 | GET | /api/prestamos(/:id) | todos (USER solo suyos) |
 | POST/PUT | /api/prestamos(/:id) | ADMIN |
 | GET | /api/devoluciones | todos (USER solo suyas) |
@@ -103,6 +115,38 @@ curl -X POST $URL/api/devoluciones -H "Authorization: Bearer TOKEN" -H "Content-
 | GET | /api/historial | ADMIN |
 | GET | /api/dashboard | todos (USER: datos propios) |
 | GET/POST/PUT | /api/usuarios | ADMIN |
+
+## Pagos simulados
+Cada reserva tiene un **monto** = Σ cantidad × precio unitario (mesas $5.00, sillas $1.00 en los datos de prueba).
+Los precios los edita el ADMIN en **Inventario**; el monto se fija al crear la reserva, así que un cambio de precio
+solo afecta a reservas futuras.
+
+**Flujo:** el usuario crea la reserva → paga (en el momento o después) → el ADMIN la confirma como siempre.
+El pago **no confirma** la reserva automáticamente ni descuenta stock; son procesos independientes.
+
+**Estados de pago** (`reservas.estado_pago`): `PENDIENTE` → `PAGADO` → `REEMBOLSADO`; `NO_REQUERIDO` si el monto es $0
+o si se canceló sin haber pagado. Cada intento queda en la tabla `pagos` (`APROBADO`, `RECHAZADO` o `REEMBOLSADO`).
+
+**Reglas:**
+- Solo se puede pagar si `estado_pago = PENDIENTE` y la reserva no está cancelada. El pago es por el total (no hay abonos).
+- Pagos concurrentes de la misma reserva: solo uno se aprueba (reserva bloqueada con `FOR UPDATE` + índice único parcial).
+- Cancelar una reserva pagada **reembolsa el total automáticamente**, en la misma transacción que libera el stock.
+- Los pagos aprobados y los reembolsos quedan en el **Historial** (tipos `PAGO` y `REEMBOLSO`). Los intentos rechazados se ven solo en la pantalla **Pagos**.
+- Un pago `EFECTIVO` solo lo registra un ADMIN (no pasa por la pasarela).
+
+**Tarjetas de prueba** (cualquier titular, vencimiento futuro, CVV de 3–4 dígitos):
+
+| Número | Resultado |
+|---|---|
+| 4242 4242 4242 4242 (VISA) | Aprobado |
+| 5555 5555 5555 4444 (MASTERCARD) | Aprobado |
+| 4000 0000 0000 0002 (VISA) | Rechazada por el banco (HTTP 402) |
+| 4000 0000 0000 9995 (VISA) | Fondos insuficientes (HTTP 402) |
+
+> ⚠️ **No usa ninguna pasarela real.** Por seguridad solo acepta estas tarjetas: cualquier otro número, incluso una
+> tarjeta real válida, se rechaza antes de procesarse. Nunca se guarda el número completo ni el CVV (solo marca y
+> últimos 4 dígitos). Para integrar una pasarela real (Stripe, Wompi, etc.) se reemplaza `services/pasarela.service.js`
+> y los datos de tarjeta deben capturarse con los campos alojados del proveedor, no con formularios propios.
 
 ## Reglas de inventario
 - Reserva PENDIENTE no descuenta stock. Al CONFIRMAR: disponible → reservada.

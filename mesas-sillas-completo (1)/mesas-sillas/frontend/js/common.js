@@ -22,6 +22,8 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const fmtDate = (d) => (d ? new Date(d).toLocaleDateString('es-SV') : '-');
 const fmtDateTime = (d) => (d ? new Date(d).toLocaleString('es-SV') : '-');
 const fmtDay = (d) => (d ? String(d).slice(0, 10) : '-');
+const fmtMoney = (n) => '$' + Number(n || 0).toFixed(2);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const badge = (e) => `<span class="badge ${esc(e)}">${esc(String(e).replace('_', ' '))}</span>`;
 
 function toast(msg, type = 'success') {
@@ -34,11 +36,11 @@ function toast(msg, type = 'success') {
   setTimeout(() => t.remove(), 4000);
 }
 
-function openModal(title, bodyHTML, { onSubmit, submitText = 'Guardar' } = {}) {
+function openModal(title, bodyHTML, { onSubmit, submitText = 'Guardar', closeText = 'Cancelar' } = {}) {
   const ov = document.createElement('div');
   ov.className = 'modal-overlay';
   ov.innerHTML = `<div class="modal"><div class="modal-head"><h3>${esc(title)}</h3><button type="button" class="icon-btn" data-close>&times;</button></div>
-    <form class="modal-body">${bodyHTML}<div class="modal-actions"><button type="button" class="btn btn-ghost" data-close>Cancelar</button>
+    <form class="modal-body">${bodyHTML}<div class="modal-actions"><button type="button" class="btn btn-ghost" data-close>${esc(closeText)}</button>
     ${onSubmit ? `<button class="btn">${esc(submitText)}</button>` : ''}</div></form></div>`;
   const close = () => ov.remove();
   ov.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', close));
@@ -58,12 +60,12 @@ function openModal(title, bodyHTML, { onSubmit, submitText = 'Guardar' } = {}) {
   return { close, el: ov };
 }
 
-function confirmModal(message, { danger = false, okText = 'Confirmar' } = {}) {
+function confirmModal(message, { danger = false, okText = 'Confirmar', cancelText = 'Cancelar' } = {}) {
   return new Promise((resolve) => {
     const ov = document.createElement('div');
     ov.className = 'modal-overlay';
     ov.innerHTML = `<div class="modal"><div class="modal-head"><h3>Confirmar</h3></div><div class="modal-body"><p>${esc(message)}</p>
-      <div class="modal-actions"><button class="btn btn-ghost" data-v="0">Cancelar</button><button class="btn ${danger ? 'btn-danger' : ''}" data-v="1">${esc(okText)}</button></div></div></div>`;
+      <div class="modal-actions"><button class="btn btn-ghost" data-v="0">${esc(cancelText)}</button><button class="btn ${danger ? 'btn-danger' : ''}" data-v="1">${esc(okText)}</button></div></div></div>`;
     ov.querySelectorAll('[data-v]').forEach((b) => b.addEventListener('click', () => { ov.remove(); resolve(b.dataset.v === '1'); }));
     document.body.appendChild(ov);
   });
@@ -76,13 +78,14 @@ const IC = {
   out: '<path d="M7 17L17 7M8 7h9v9"/>',
   back: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  card: '<rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20M6 15h4"/>',
   users: '<circle cx="9" cy="8" r="4"/><path d="M2 21c0-4 3-7 7-7s7 3 7 7M17 4a4 4 0 0 1 0 8M22 21c0-3-2-5.5-5-6.5"/>'
 };
 const icon = (n, extra = '') => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" ${extra}>${IC[n]}</svg>`;
 
 const MENU = [
   ['dashboard.html', 'Dashboard', 'dashboard', false, 'General'], ['inventario.html', 'Inventario', 'box', false, 'Operación'],
-  ['reservas.html', 'Reservas', 'calendar', false], ['prestamos.html', 'Préstamos', 'out', false], ['devoluciones.html', 'Devoluciones', 'back', false],
+  ['reservas.html', 'Reservas', 'calendar', false], ['pagos.html', 'Pagos', 'card', false], ['prestamos.html', 'Préstamos', 'out', false], ['devoluciones.html', 'Devoluciones', 'back', false],
   ['historial.html', 'Historial', 'clock', true, 'Administración'], ['usuarios.html', 'Usuarios', 'users', true]
 ];
 
@@ -105,6 +108,20 @@ function initShell() {
   shell.querySelector('.main').appendChild(content);
   document.getElementById('logoutBtn').onclick = logout;
   document.getElementById('menuBtn').onclick = () => document.getElementById('sidebar').classList.toggle('open');
+}
+
+// Comprobante de un pago (simulado). `p` es una fila de /api/pagos
+function comprobante(p) {
+  const fila = (k, v) => `<div class="rcpt-row"><span>${k}</span><strong>${v}</strong></div>`;
+  const metodo = p.metodo === 'TARJETA' ? `${esc(p.tarjeta_marca)} •••• ${esc(p.tarjeta_ultimos4)}` : 'Efectivo';
+  const reserva = '#' + p.reserva_id + (p.fecha ? ` · ${fmtDay(p.fecha)} ${String(p.hora_inicio).slice(0, 5)}–${String(p.hora_fin).slice(0, 5)}` : '');
+  openModal('Comprobante de pago', `<div class="rcpt">
+    <div class="rcpt-total">${fmtMoney(p.monto)}</div><div class="rcpt-state">${badge(p.estado)}</div>
+    ${fila('Referencia', esc(p.referencia))}${fila('Fecha', fmtDateTime(p.created_at))}${fila('Reserva', esc(reserva))}
+    ${p.usuario_nombre ? fila('Cliente', esc(p.usuario_nombre)) : ''}${fila('Método', metodo)}
+    ${p.estado === 'REEMBOLSADO' ? fila('Reembolsado', fmtDateTime(p.reembolsado_at)) : ''}
+    ${p.estado === 'RECHAZADO' ? fila('Motivo', esc(p.motivo_rechazo)) : ''}
+    <p class="hint">Comprobante de práctica: no corresponde a una transacción real.</p></div>`, { closeText: 'Cerrar' });
 }
 
 // Utilidad de tabla con búsqueda local
